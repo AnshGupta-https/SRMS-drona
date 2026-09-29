@@ -1,0 +1,111 @@
+# Render Blueprint for SRMS Drona (DRONAv2) -- free web service + external Neon Postgres.
+#
+# ############################################################################
+# # STATUS: ACTIVE — Blueprint-managed since 2026-09-23 (id exs-daq0qoek1f9s73dhte70). #
+# #                                                                          #
+# # The `DRONAv2` service is associated with this Blueprint ("Associate      #
+# # existing services" — no duplicate was created). **Auto Sync is OFF**,    #
+# # so editing this file does NOT change production until a sync runs:       #
+# # Dashboard -> Blueprints -> DRONAv2 -> Sync (or flip Auto Sync on), or    #
+# # `python scripts/apply_render_config.py --apply` for an immediate push.   #
+# # Historically this file sat inert (trap 4.10, ENGINEERING.md) while       #
+# # production ran a different command — verify against the live service.    #
+# #                                                                          #
+# # Every field below is aligned with the live service so that a sync is a   #
+# # no-op until you intend a change. Email vars are deferred until SMTP      #
+# # creds exist (HANDOFF §3a).                                               #
+# ############################################################################
+#
+# MIGRATION — COMPLETED 2026-09-23 (record of how adoption was done; the CLI
+# and API cannot create Blueprints — dashboard-only, driven via browser):
+#   1. Dashboard -> New > Blueprint -> Connect this repo, branch `main`.
+#   2. Review the change preview. It MUST show the existing `DRONAv2` service
+#      being updated, NOT a new service. If it offers to create something like
+#      `DRONAv2-xxxx`, STOP -- the name did not match and you would end up with
+#      a second, duplicate service.
+#   3. Set the Blueprint's **Auto Sync to No** before the first sync, so nothing
+#      is applied without an explicit click.
+#   4. Deploy the Blueprint, then verify against the running service:
+#        render services -o json
+#        render logs -r srv-dajkh37qj5pc73e038i0 --limit 200 -o text
+#
+# ROLLBACK -- low risk by design:
+#   * Syncing a Blueprint NEVER deletes an existing resource.
+#   * Disconnecting the Blueprint leaves the service running as-is.
+#   * To back out: set Auto Sync to No (or disconnect), then re-apply any
+#     setting you want changed via the dashboard or `render services update`.
+#   The service and its URL are never destroyed by this process.
+#
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    # Must match the live service name EXACTLY. A mismatch makes Render create a
+    # second service instead of adopting this one.
+    name: DRONAv2
+    runtime: python
+    plan: free
+    # Cannot be modified after creation -- must match the live region.
+    region: oregon
+    repo: https://github.com/dgexplores/DRONAv2
+    branch: main
+    # `autoDeployTrigger: commit` is the current form of `autoDeploy: true`,
+    # which is deprecated.
+    autoDeployTrigger: commit
+    numInstances: 1
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    # set -e aborts the boot on the first failed step. `boot` runs migrate,
+    # createcachetable and set_admin_password in ONE process — the previous
+    # form spawned three separate manage.py invocations (three Django boots,
+    # ~90s) before gunicorn, which dominated free-plan cold starts. A failed
+    # step still propagates (never `|| true`). set_admin_password exits 0
+    # when DJANGO_ADMIN_PASSWORD is unset.
+    startCommand: >-
+      set -e;
+      python manage.py boot;
+      gunicorn srms_drona.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /health/
+    # `previews` is omitted on purpose: the live service has preview generation
+    # disabled, and omitting the field disables it.
+    envVars:
+      - key: DJANGO_DEBUG
+        value: false
+      # generateValue creates a 256-bit value ONLY if none already exists, so
+      # adopting this Blueprint does not rotate the live secret key.
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_ALLOWED_HOSTS
+        value: dronav2.onrender.com
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        value: https://dronav2.onrender.com
+      - key: DJANGO_SECURE_SSL_REDIRECT
+        value: True
+      # --- Email delivery (HANDOFF §3a): NOT declared yet on purpose. Adoption
+      # --- would CREATE DJANGO_EMAIL_BACKEND without SMTP creds, flipping to
+      # --- a backend that fails silently in background threads. The six vars
+      # --- (backend, host, port, tls, user, password) get declared together
+      # --- with the live values the day SMTP creds land.
+      - key: SRMS_RUN_SCHEDULER
+        value: 1
+      # Pin the quiz generator to a stable Gemini model (the fallback pool can
+      # otherwise drift through previews that Google retires).
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+      # --- Clerk SSO (public values sync; secret never overwritten). Live
+      # --- service already has all three (set via API 2026-09-23).
+      - key: CLERK_PUBLISHABLE_KEY
+        value: pk_test_ZmlybS10ZXJtaXRlLTgzLmNsZXJrLmFjY291bnRzLmRldiQ
+      - key: CLERK_AUTHORIZED_PARTIES
+        value: https://firm-termite-83.clerk.accounts.dev
+      - key: CLERK_SECRET_KEY
+        sync: false
+      # --- Secrets: set in Dashboard -> Environment. Render IGNORES `sync: false`
+      # --- entries when updating an existing Blueprint, so a sync can never
+      # --- overwrite a value already set on the live service.
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SRMS_BASE_URL
+        sync: false
+      - key: DJANGO_ADMIN_PASSWORD
+        sync: false
